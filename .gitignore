@@ -1,0 +1,7 @@
+certs
+node_modules
+.dockerignore
+
+.env
+.gitattributes
+.git/

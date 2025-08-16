@@ -1,0 +1,217 @@
+
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Phone Publisher</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 16px; }
+    video { width: 100%; max-height: 60vh; background: #000; border-radius: 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
+    label { font-size: 14px; }
+    input[type="range"] { width: 100%; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; }
+    .ok { color: #0a7; }
+    .warn { color: #a70; }
+    .err { color: #a00; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#eee; font-size:12px; }
+  </style>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#000000">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+
+</head>
+<body>
+  <h2>Caméra du téléphone → Diffusion</h2>
+  <p>Room: <span id="room" class="pill"></span></p>
+  <video id="preview" playsinline autoplay muted></video>
+
+  <div class="card">
+    <div class="row">
+      <button id="startBtn">Démarrer la diffusion</button>
+      <button id="stopBtn" disabled>Arrêter</button>
+      <span id="status" class="warn">en attente…</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>Résolution:
+        <select id="res">
+          <option value="1920x1080">1080p (1920×1080)</option>
+          <option value="1280x720">720p (1280×720)</option>
+          <option value="640x480">480p (640×480)</option>
+        </select>
+      </label>
+      <label>Caméra:
+        <select id="facing">
+          <option value="environment">Arrière</option>
+          <option value="user">Avant</option>
+        </select>
+      </label>
+    </div>
+    <div id="zoomWrap" style="display:none; margin-top:8px;">
+      <label for="zoom">Zoom (optique si supporté):</label>
+      <input type="range" id="zoom" min="1" max="1" step="0.1" value="1">
+      <div>Valeur: <span id="zoomVal">1</span></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <button id="torchBtn" disabled>Lampe (torch)</button>
+      <span id="capabilities"></span>
+    </div>
+  </div>
+
+  <script>
+    const qs = new URLSearchParams(location.search);
+    const room = qs.get('room') || 'coins';
+    document.getElementById('room').textContent = room;
+
+    const preview = document.getElementById('preview');
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const resSel = document.getElementById('res');
+    const facingSel = document.getElementById('facing');
+    const zoomWrap = document.getElementById('zoomWrap');
+    const zoomRange = document.getElementById('zoom');
+    const zoomVal = document.getElementById('zoomVal');
+    const torchBtn = document.getElementById('torchBtn');
+    const capsEl = document.getElementById('capabilities');
+
+    let ws, pc, stream, videoTrack, sender, torchOn = false;
+
+    function logStatus(txt, cls='') {
+      statusEl.className = cls || '';
+      statusEl.textContent = txt;
+    }
+
+    function getWSURL() {
+      // Use same origin, switch to wss if https
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${proto}://${location.host}/ws`;
+    }
+
+    async function getStream() {
+      const [w,h] = resSel.value.split('x').map(Number);
+      const facingMode = facingSel.value;
+      const constraints = {
+        audio: false,
+        video: {
+          facingMode,
+          width: { ideal: w },
+          height: { ideal: h },
+          frameRate: { ideal: 30 },
+          advanced: [{ focusMode: "continuous" }]
+        }
+      };
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    }
+
+    function setupZoomAndTorch(track) {
+      try {
+        const caps = track.getCapabilities ? track.getCapabilities() : {};
+        capsEl.textContent = JSON.stringify({ zoom: caps.zoom, torch: caps.torch }) || '';
+        if (caps.zoom) {
+          zoomWrap.style.display = 'block';
+          zoomRange.min = caps.zoom.min ?? 1;
+          zoomRange.max = caps.zoom.max ?? 1;
+          zoomRange.step = caps.zoom.step ?? 0.1;
+          zoomRange.value = caps.zoom.min ?? 1;
+          zoomVal.textContent = zoomRange.value;
+          zoomRange.oninput = () => {
+            zoomVal.textContent = zoomRange.value;
+            track.applyConstraints({ advanced: [{ zoom: parseFloat(zoomRange.value) }] }).catch(console.warn);
+          };
+        } else {
+          zoomWrap.style.display = 'none';
+        }
+        if (caps.torch) {
+          torchBtn.disabled = false;
+          torchBtn.onclick = async () => {
+            torchOn = !torchOn;
+            try {
+              await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+            } catch(e) { console.warn(e); }
+            torchBtn.textContent = torchOn ? 'Lampe: ON' : 'Lampe (torch)';
+          };
+        } else {
+          torchBtn.disabled = true;
+        }
+      } catch (e) {
+        console.warn('Capabilities not available:', e);
+      }
+    }
+
+    function createPC() {
+      const config = { iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] };
+      pc = new RTCPeerConnection(config);
+      pc.onicecandidate = (e) => {
+        if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') logStatus('Connecté', 'ok');
+        if (pc.connectionState === 'failed') logStatus('Échec ICE', 'err');
+      };
+      return pc;
+    }
+
+    async function start() {
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      try {
+        stream = await getStream();
+        preview.srcObject = stream;
+        videoTrack = stream.getVideoTracks()[0];
+        setupZoomAndTorch(videoTrack);
+
+        ws = new WebSocket(getWSURL());
+        ws.onopen = () => ws.send(JSON.stringify({ type: 'join', room }));
+        ws.onmessage = async (ev) => {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'joined') {
+            pc = createPC();
+            sender = pc.addTrack(videoTrack, stream);
+            const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+            await pc.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
+            logStatus('En attente du viewer…', 'warn');
+          } else if (msg.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            logStatus('Diffusion en cours', 'ok');
+          } else if (msg.type === 'candidate' && msg.candidate) {
+            try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+          } else if (msg.type === 'bye') {
+            logStatus('Viewer parti', 'warn');
+          }
+        };
+        ws.onclose = () => logStatus('WS fermé', 'err');
+      } catch (e) {
+        console.error(e);
+        logStatus('Erreur: ' + e.message, 'err');
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    }
+
+    function stop() {
+      stopBtn.disabled = true;
+      startBtn.disabled = false;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+      if (pc) pc.close();
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      logStatus('Arrêté', 'warn');
+    }
+
+    startBtn.onclick = start;
+    stopBtn.onclick = stop;
+  </script>
+</body>
+</html>

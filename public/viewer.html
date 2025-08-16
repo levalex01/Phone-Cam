@@ -1,0 +1,194 @@
+
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PC Viewer</title>
+  <style>
+    :root { --bg:#0b0d10; --fg:#e6e6e6; --muted:#9aa4ad; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 12px 16px; display: flex; gap: 12px; align-items: center; background: #11161b; position: sticky; top: 0; z-index: 2; }
+    .pill { padding: 4px 8px; border-radius: 999px; background: #1b2430; color: #cbd5e1; font-size: 12px; }
+    button, select { padding: 10px 14px; border-radius: 10px; border: 1px solid #2b3947; background: #15202b; color: var(--fg); }
+    main { position: relative; height: calc(100% - 60px); overflow: hidden; }
+    #stage { position: absolute; inset: 0; touch-action: none; cursor: grab; }
+    #stage.dragging { cursor: grabbing; }
+    #video { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(1); transform-origin: center center; background: #000; border-radius: 12px; }
+    #hud { position: absolute; right: 16px; bottom: 16px; display: flex; gap: 8px; }
+    #snapCanvas { display: none; }
+    #status { color: #f59e0b; }
+  </style>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#000000">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+
+</head>
+<body>
+  <header>
+    <div>Viewer</div>
+    <div class="pill">Room: <span id="room"></span></div>
+    <button id="capture">Capture</button>
+    <select id="fit">
+      <option value="contain">Adapter</option>
+      <option value="cover">Remplir</option>
+      <option value="native">Taille réelle</option>
+    </select>
+    <div id="status">en attente…</div>
+  </header>
+  <main>
+    <div id="stage">
+      <video id="video" playsinline autoplay></video>
+    </div>
+    <canvas id="snapCanvas"></canvas>
+    <div id="hud"></div>
+  </main>
+
+  <script>
+    const qs = new URLSearchParams(location.search);
+    const room = qs.get('room') || 'coins';
+    document.getElementById('room').textContent = room;
+
+    const stage = document.getElementById('stage');
+    const video = document.getElementById('video');
+    const statusEl = document.getElementById('status');
+    const captureBtn = document.getElementById('capture');
+    const fitSel = document.getElementById('fit');
+    const snapCanvas = document.getElementById('snapCanvas');
+
+    function logStatus(txt) { statusEl.textContent = txt; }
+
+    function getWSURL() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${proto}://${location.host}/ws`;
+    }
+
+    let ws, pc;
+    function createPC() {
+      const config = { iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] };
+      pc = new RTCPeerConnection(config);
+      pc.onicecandidate = (e) => {
+        if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+      };
+      pc.ontrack = (ev) => {
+        if (ev.streams && ev.streams[0]) {
+          video.srcObject = ev.streams[0];
+          logStatus('Flux reçu. Utilisez la molette pour zoomer, glisser pour déplacer.');
+          fitVideo();
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') logStatus('Connecté');
+        if (pc.connectionState === 'failed') logStatus('Échec ICE');
+      };
+      return pc;
+    }
+
+    async function start() {
+      ws = new WebSocket(getWSURL());
+      ws.onopen = () => ws.send(JSON.stringify({ type: 'join', room }));
+      ws.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'offer') {
+          pc = createPC();
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+        } else if (msg.type === 'candidate' && msg.candidate) {
+          try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+        }
+      };
+    }
+
+    // Viewer zoom & pan
+    let scale = 1, minScale = 1, maxScale = 12;
+    let offsetX = 0, offsetY = 0;
+    let isDragging = false, startX = 0, startY = 0;
+
+    function applyTransform() {
+      video.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) scale(${scale})`;
+    }
+
+    function fitVideo() {
+      const mode = fitSel.value;
+      const vw = video.videoWidth || 1920;
+      const vh = video.videoHeight || 1080;
+      const sw = stage.clientWidth;
+      const sh = stage.clientHeight;
+
+      if (mode === 'native') {
+        scale = 1;
+      } else if (mode === 'contain') {
+        scale = Math.min(sw / vw, sh / vh);
+      } else if (mode === 'cover') {
+        scale = Math.max(sw / vw, sh / vh);
+      }
+      minScale = scale;
+      offsetX = 0; offsetY = 0;
+      video.style.width = vw + 'px';
+      video.style.height = vh + 'px';
+      applyTransform();
+    }
+
+    window.addEventListener('resize', fitVideo);
+    fitSel.addEventListener('change', fitVideo);
+
+    stage.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = -e.deltaY;
+      const factor = Math.exp(delta * 0.0015);
+      const prevScale = scale;
+      scale = Math.min(maxScale, Math.max(minScale, scale * factor));
+
+      // Zoom towards cursor position
+      const rect = stage.getBoundingClientRect();
+      const cx = e.clientX - rect.left - rect.width / 2 - offsetX;
+      const cy = e.clientY - rect.top - rect.height / 2 - offsetY;
+      offsetX -= cx * (scale / prevScale - 1);
+      offsetY -= cy * (scale / prevScale - 1);
+      applyTransform();
+    }, { passive: false });
+
+    stage.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+      startX = e.clientX - offsetX;
+      startY = e.clientY - offsetY;
+      stage.classList.add('dragging');
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      offsetX = e.clientX - startX;
+      offsetY = e.clientY - startY;
+      applyTransform();
+    });
+    stage.addEventListener('pointerup', (e) => {
+      isDragging = false;
+      stage.classList.remove('dragging');
+      stage.releasePointerCapture(e.pointerId);
+    });
+    stage.addEventListener('pointercancel', () => { isDragging = false; stage.classList.remove('dragging'); });
+
+    captureBtn.addEventListener('click', () => {
+      if (!video.videoWidth) return;
+      snapCanvas.width = video.videoWidth;
+      snapCanvas.height = video.videoHeight;
+      const ctx = snapCanvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+      const url = snapCanvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+      a.href = url;
+      a.download = `capture-${stamp}.png`;
+      a.click();
+    });
+
+    start();
+  </script>
+</body>
+</html>

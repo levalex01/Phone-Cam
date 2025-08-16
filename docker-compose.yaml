@@ -1,0 +1,9 @@
+version: "3"
+services:
+  phonecam:
+    build: .
+    ports:
+      - "3000:3000"
+      - "8443:8443"
+    volumes:
+      - ./certs:/app/certs
