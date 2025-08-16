@@ -1,7 +1,8 @@
 version: "3"
 services:
   phonecam:
-    build: .
+    build: levalex01/phonecam:latest
+    container_name: phonecam
     ports:
       - "3000:3000"
       - "8443:8443"
