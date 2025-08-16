@@ -4,6 +4,8 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/levalex01/phonecam)](https://hub.docker.com/r/levalex01/phonecam)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/w/levalex01/Phone-Cam)
+
 
 **PhoneCam** transforme votre téléphone en **caméra haute qualité** pour votre PC via **WebRTC**.  
 Parfait pour photographier vos pièces de monnaie, timbres, objets de collection… ou pour toute application nécessitant un **zoom précis** et des **captures nettes**.
