@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="fr">
 <head>
@@ -10,13 +9,22 @@
     video { width: 100%; max-height: 60vh; background: #000; border-radius: 12px; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
-    label { font-size: 14px; }
+    label { font-size: 14px; display:block; margin-top:6px; }
     input[type="range"] { width: 100%; }
     button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; }
     .ok { color: #0a7; }
     .warn { color: #a70; }
     .err { color: #a00; }
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#eee; font-size:12px; }
+    .focus-ring {
+      position:absolute;
+      border:2px solid yellow;
+      border-radius:50%;
+      width:80px; height:80px;
+      pointer-events:none;
+      display:none;
+      transform:translate(-50%,-50%);
+    }
   </style>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#000000">
@@ -25,12 +33,14 @@
       navigator.serviceWorker.register('/sw.js');
     }
   </script>
-
 </head>
 <body>
   <h2>Caméra du téléphone → Diffusion</h2>
   <p>Room: <span id="room" class="pill"></span></p>
-  <video id="preview" playsinline autoplay muted></video>
+  <div style="position:relative;">
+    <video id="preview" playsinline autoplay muted></video>
+    <div id="focusRing" class="focus-ring"></div>
+  </div>
 
   <div class="card">
     <div class="row">
@@ -56,11 +66,27 @@
         </select>
       </label>
     </div>
+
+    <!-- Zoom -->
     <div id="zoomWrap" style="display:none; margin-top:8px;">
       <label for="zoom">Zoom (optique si supporté):</label>
       <input type="range" id="zoom" min="1" max="1" step="0.1" value="1">
       <div>Valeur: <span id="zoomVal">1</span></div>
     </div>
+
+    <!-- Mode Auto/Manuel -->
+    <div style="margin-top:8px;">
+      <button id="toggleMode">Mode: Auto</button>
+    </div>
+
+    <!-- Réglages manuels -->
+    <div id="manualControls" style="display:none; margin-top:8px;">
+      <label for="focusSlider">Focus manuel:</label>
+      <input type="range" id="focusSlider">
+      <label for="expoSlider">Exposition:</label>
+      <input type="range" id="expoSlider">
+    </div>
+
     <div class="row" style="margin-top:8px;">
       <button id="torchBtn" disabled>Lampe (torch)</button>
       <span id="capabilities"></span>
@@ -73,6 +99,7 @@
     document.getElementById('room').textContent = room;
 
     const preview = document.getElementById('preview');
+    const focusRing = document.getElementById('focusRing');
     const statusEl = document.getElementById('status');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
@@ -83,8 +110,12 @@
     const zoomVal = document.getElementById('zoomVal');
     const torchBtn = document.getElementById('torchBtn');
     const capsEl = document.getElementById('capabilities');
+    const toggleMode = document.getElementById('toggleMode');
+    const manualControls = document.getElementById('manualControls');
+    const focusSlider = document.getElementById('focusSlider');
+    const expoSlider = document.getElementById('expoSlider');
 
-    let ws, pc, stream, videoTrack, sender, torchOn = false;
+    let ws, pc, stream, videoTrack, sender, torchOn = false, isManual = false;
 
     function logStatus(txt, cls='') {
       statusEl.className = cls || '';
@@ -92,7 +123,6 @@
     }
 
     function getWSURL() {
-      // Use same origin, switch to wss if https
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       return `${proto}://${location.host}/ws`;
     }
@@ -113,10 +143,12 @@
       return await navigator.mediaDevices.getUserMedia(constraints);
     }
 
-    function setupZoomAndTorch(track) {
+    function setupControls(track) {
       try {
         const caps = track.getCapabilities ? track.getCapabilities() : {};
-        capsEl.textContent = JSON.stringify({ zoom: caps.zoom, torch: caps.torch }) || '';
+        capsEl.textContent = JSON.stringify({ zoom: caps.zoom, torch: caps.torch, focus: caps.focusMode, expo: caps.exposureCompensation }) || '';
+
+        // Zoom
         if (caps.zoom) {
           zoomWrap.style.display = 'block';
           zoomRange.min = caps.zoom.min ?? 1;
@@ -128,9 +160,9 @@
             zoomVal.textContent = zoomRange.value;
             track.applyConstraints({ advanced: [{ zoom: parseFloat(zoomRange.value) }] }).catch(console.warn);
           };
-        } else {
-          zoomWrap.style.display = 'none';
         }
+
+        // Torch
         if (caps.torch) {
           torchBtn.disabled = false;
           torchBtn.onclick = async () => {
@@ -140,9 +172,52 @@
             } catch(e) { console.warn(e); }
             torchBtn.textContent = torchOn ? 'Lampe: ON' : 'Lampe (torch)';
           };
-        } else {
-          torchBtn.disabled = true;
         }
+
+        // Focus manuel
+        if (caps.focusDistance) {
+          focusSlider.min = caps.focusDistance.min;
+          focusSlider.max = caps.focusDistance.max;
+          focusSlider.step = caps.focusDistance.step || 0.1;
+          focusSlider.value = track.getSettings().focusDistance || caps.focusDistance.min;
+          focusSlider.oninput = () => {
+            if (isManual) {
+              track.applyConstraints({ advanced: [{ focusMode:"manual", focusDistance: parseFloat(focusSlider.value) }] }).catch(console.warn);
+            }
+          };
+        }
+
+        // Exposition manuelle
+        if (caps.exposureCompensation) {
+          expoSlider.min = caps.exposureCompensation.min;
+          expoSlider.max = caps.exposureCompensation.max;
+          expoSlider.step = caps.exposureCompensation.step || 0.1;
+          expoSlider.value = track.getSettings().exposureCompensation || 0;
+          expoSlider.oninput = () => {
+            if (isManual) {
+              track.applyConstraints({ advanced: [{ exposureMode:"manual", exposureCompensation: parseFloat(expoSlider.value) }] }).catch(console.warn);
+            }
+          };
+        }
+
+        // Tap-to-focus/expo auto
+        preview.onclick = async (e) => {
+          if (!isManual) {
+            const rect = preview.getBoundingClientRect();
+            focusRing.style.left = e.clientX - rect.left + "px";
+            focusRing.style.top = e.clientY - rect.top + "px";
+            focusRing.style.display = "block";
+            setTimeout(()=>focusRing.style.display="none",800);
+
+            let c = { advanced: [] };
+            if (caps.focusMode?.includes("single-shot")) c.advanced.push({ focusMode:"single-shot" });
+            else if (caps.focusMode?.includes("continuous")) c.advanced.push({ focusMode:"continuous" });
+            if (caps.exposureMode?.includes("continuous")) c.advanced.push({ exposureMode:"continuous" });
+
+            if (c.advanced.length>0) track.applyConstraints(c).catch(console.warn);
+          }
+        };
+
       } catch (e) {
         console.warn('Capabilities not available:', e);
       }
@@ -168,7 +243,7 @@
         stream = await getStream();
         preview.srcObject = stream;
         videoTrack = stream.getVideoTracks()[0];
-        setupZoomAndTorch(videoTrack);
+        setupControls(videoTrack);
 
         ws = new WebSocket(getWSURL());
         ws.onopen = () => ws.send(JSON.stringify({ type: 'join', room }));
@@ -209,6 +284,18 @@
       if (stream) stream.getTracks().forEach(t => t.stop());
       logStatus('Arrêté', 'warn');
     }
+
+    // Toggle auto / manuel
+    toggleMode.onclick = async () => {
+      isManual = !isManual;
+      manualControls.style.display = isManual ? "block" : "none";
+      toggleMode.textContent = isManual ? "Mode: Manuel" : "Mode: Auto";
+      if (videoTrack) {
+        try {
+          await videoTrack.applyConstraints({ advanced: [{ focusMode: isManual ? "manual":"continuous", exposureMode: isManual ? "manual":"continuous" }] });
+        } catch(e) { console.warn(e); }
+      }
+    };
 
     startBtn.onclick = start;
     stopBtn.onclick = stop;
