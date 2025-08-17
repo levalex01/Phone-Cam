@@ -16,6 +16,7 @@ Parfait pour photographier vos pièces de monnaie, timbres, objets de collection
 
 - 🔴 **Diffusion vidéo en direct** depuis la caméra arrière du téléphone (1080p/720p/480p)  
 - 🔍 **Zoom optique** et réglage de la torche (si supporté par l’appareil)  
+- 🔎 **Focus Auto/Manuel** et en Auto permet de clicker sur l'écran pour le focus et permet en manuel la gestion de l'exposition
 - 🖼 **Zoom / Pan fluide** côté PC avec molette + glisser  
 - 📷 **Capture PNG haute résolution** du flux vidéo  
 - 📱 **PWA installable** (plein écran, icône sur écran d’accueil)  
@@ -54,8 +55,9 @@ docker run -p 3000:3000 -p 8443:8443 \
 
 ## ⚙️ Options de configuration
 
-- **room** : identifiant unique du salon WebRTC (`?room=monflux`)  
-- **Résolution vidéo** : choix entre 1080p, 720p, 480p  
+- **Room** : identifiant unique du salon WebRTC (`?room=monflux`)  
+- **Résolution vidéo** : choix entre 1080p, 720p, 480p 
+- **Focus** : Auto et Manuel 
 - **Zoom optique** : via API `applyConstraints` (si supporté)  
 - **Torche** : activation/désactivation si l’appareil le permet  
 
